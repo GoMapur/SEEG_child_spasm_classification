@@ -19,6 +19,7 @@ from src.utilities import (
 )
 from captum.attr import Occlusion
 import matplotlib.pylab as pylab
+import argparse
 
 cm = 1/2.54
 params = {'legend.fontsize': 6,
@@ -29,17 +30,25 @@ params = {'legend.fontsize': 6,
          'ytick.labelsize':6}
 pylab.rcParams.update(params)
 
-# TODO: Set these paths appropriately for your environment
-METADATA_PATH = 'PATH/TO/YOUR/metadata.json'  # <-- Set this
-DATA_DIR = 'PATH/TO/YOUR/data_dir'            # <-- Set this
-SAVE_PATH = 'PATH/TO/YOUR/save_dir'           # <-- Set this
-CKPT_DIR = 'PATH/TO/YOUR/ckpt_dir'            # <-- Set this (directory containing fold subfolders)
-LOG_DIR = 'PATH/TO/YOUR/log_dir'              # <-- Set this (directory containing log files)
-DEVICE = 'cuda:0'  # or 'cpu'
-THRESHOLD = 0.5    # Example threshold, adjust as needed
-SPLIT = 'test'     # or 'train', 'val', etc.
+def parse_args():
+    parser = argparse.ArgumentParser(description="Frequency Patient-wise Model Interpretation (Occlusion Analysis)")
+    parser.add_argument('--metadata_path', type=str, required=True, help='Path to metadata JSON file')
+    parser.add_argument('--data_dir', type=str, required=True, help='Path to EEG data directory')
+    parser.add_argument('--save_path', type=str, required=True, help='Directory to save results')
+    parser.add_argument('--ckpt_dir', type=str, required=True, help='Directory containing model checkpoints (by fold)')
+    parser.add_argument('--log_dir', type=str, required=True, help='Directory containing log files (by fold)')
+    parser.add_argument('--experiment_name', type=str, required=True, help='Experiment name (used for ckpt/log subfolders)')
+    parser.add_argument('--device', type=str, default='cuda:0', help='Device for computation (e.g., cuda:0 or cpu)')
+    parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for occlusion analysis')
+    parser.add_argument('--wanted_test_set', type=str, default='0-49', help='Test set patient IDs (e.g., "0-49" or "1,2,3")')
+    parser.add_argument('--split', type=str, default='test', help='Data split to use (default: test)')
+    return parser.parse_args()
 
-# Optionally, replace getopts with argparse for a more robust CLI in production.
+def parse_wanted_test_set(s):
+    if '-' in s:
+        start, end = map(int, s.split('-'))
+        return list(range(start, end+1))
+    return [int(x) for x in s.split(',') if x.strip()]
 
 def load_model(ckpt_path, device):
     model = Neural_CNN().to(device)
@@ -51,9 +60,9 @@ def load_model(ckpt_path, device):
 def get_fold_ckpt_and_log(experiment_name, fold_id):
     import glob
     from natsort import natsorted
-    ckpt_folder = os.path.join(CKPT_DIR, experiment_name, f'fold{fold_id}', '*')
+    ckpt_folder = os.path.join(args.ckpt_dir, experiment_name, f'fold{fold_id}', '*')
     ckpt_path = natsorted(glob.glob(ckpt_folder))[-1]
-    log_path = os.path.join(LOG_DIR, experiment_name, f'fold{fold_id}', 'epoch_final_test_val.csv')
+    log_path = os.path.join(args.log_dir, experiment_name, f'fold{fold_id}', 'epoch_final_test_val.csv')
     return ckpt_path, log_path
 
 def plot_model_input(fig, ax, data, cmap, channels, title):
@@ -78,16 +87,18 @@ def plot_occlusion_group_wise_mean_std(save_path, occlusion_preds, channels):
     return mean, std
 
 if __name__ == '__main__':
-    # TODO: Set experiment_name and wanted_test_set as needed
-    experiment_name = 'EXPERIMENT_NAME'  # <-- Set this
-    wanted_test_set = list(range(0, 50))
+    args = parse_args()
+    args.wanted_test_set = parse_wanted_test_set(args.wanted_test_set)
+    print("[INFO] Parsed arguments:")
+    for k, v in vars(args).items():
+        print(f"  {k}: {v}")
 
     # Load metadata and dataset
-    print(f"Loading dataset from {METADATA_PATH} ...")
+    print(f"Loading dataset from {args.metadata_path} ...")
     dataset = ScalpEEG_FFT_Metadata_Dataset(
-        metadata_path=METADATA_PATH,
-        data_dir=DATA_DIR,
-        split=SPLIT,
+        metadata_path=args.metadata_path,
+        data_dir=args.data_dir,
+        split=args.split,
         window_size=3000,
         n_channels=19,
         sample_rate=200,
@@ -100,18 +111,17 @@ if __name__ == '__main__':
     # Extract patient IDs from metadata
     patient_ids = sorted(set([s['patient_id'] for s in dataset.samples]))
     channels = None
-    # Try to get channel info from the first sample
     if len(dataset.samples) > 0:
         first_recording_id = dataset.samples[0]['recording_id']
-        case_data_loaded = np.load(os.path.join(DATA_DIR, f"{first_recording_id}.npz"), allow_pickle=True)
+        case_data_loaded = np.load(os.path.join(args.data_dir, f"{first_recording_id}.npz"), allow_pickle=True)
         channels = case_data_loaded['channel'][:19]
 
-    Path(SAVE_PATH).mkdir(parents=True, exist_ok=True)
+    Path(args.save_path).mkdir(parents=True, exist_ok=True)
     ckpt_exist = False
-    if Path(os.path.join(SAVE_PATH, "occlusion_contrast_data.npz")).exists():
+    if Path(os.path.join(args.save_path, "occlusion_contrast_data.npz")).exists():
         print("The save path already exists. Replotting...")
         ckpt_exist = True
-        occlusion_contrast_data_loaded = np.load(os.path.join(SAVE_PATH, "occlusion_contrast_data.npz"), allow_pickle=True)
+        occlusion_contrast_data_loaded = np.load(os.path.join(args.save_path, "occlusion_contrast_data.npz"), allow_pickle=True)
         save_patient_ids = occlusion_contrast_data_loaded["patient_ids"]
         save_recording_ids = occlusion_contrast_data_loaded["recording_ids"]
         save_start_ids = occlusion_contrast_data_loaded["start_ids"]
@@ -126,26 +136,32 @@ if __name__ == '__main__':
         save_dataset_ids_in_datasets = []
         save_preds = []
 
+    def get_fold_ckpt_and_log(experiment_name, fold_id):
+        import glob
+        from natsort import natsorted
+        ckpt_folder = os.path.join(args.ckpt_dir, experiment_name, f'fold{fold_id}', '*')
+        ckpt_path = natsorted(glob.glob(ckpt_folder))[-1]
+        log_path = os.path.join(args.log_dir, experiment_name, f'fold{fold_id}', 'epoch_final_test_val.csv')
+        return ckpt_path, log_path
+
     for fold_id in range(5):
         print(f"Fold {fold_id}")
-        ckpt_path, log_path = get_fold_ckpt_and_log(experiment_name, fold_id)
-        model = load_model(ckpt_path, DEVICE)
+        ckpt_path, log_path = get_fold_ckpt_and_log(args.experiment_name, fold_id)
+        model = load_model(ckpt_path, args.device)
         log_df = pd.read_csv(log_path)
         test_set = log_df["patient_names"].unique()
         for test_id in test_set:
-            if test_id not in wanted_test_set:
+            if test_id not in args.wanted_test_set:
                 continue
             print(f"occlusion on patient {test_id}")
-            # Filter dataset for this patient
             patient_samples = [i for i, s in enumerate(dataset.samples) if s['patient_id'] == test_id]
             if not patient_samples:
                 continue
-            # Create a DataLoader for this patient's samples
             patient_subset = torch.utils.data.Subset(dataset, patient_samples)
             dataloader = DataLoader(patient_subset, batch_size=64, num_workers=1, pin_memory=True, shuffle=True)
             all_model_preds = []
             for batch in dataloader:
-                waveforms = batch['waveform'].float().to(DEVICE)
+                waveforms = batch['waveform'].float().to(args.device)
                 input_imgs = transform_waveform_to_model_input_gpu(waveforms, 1, 50)
                 model_preds = model(input_imgs).detach().cpu().numpy().flatten()
                 all_model_preds += model_preds.tolist()
@@ -158,7 +174,7 @@ if __name__ == '__main__':
                 attribution_preds_cpu = []
                 start_ids_list = []
                 for batch in dataloader:
-                    waveforms = batch['waveform'].float().to(DEVICE)
+                    waveforms = batch['waveform'].float().to(args.device)
                     input_imgs = transform_waveform_to_model_input_gpu(waveforms, 1, 50)
                     start_inds = batch['start_ind']
                     attribution_preds_cuda = occlusion.attribute(
@@ -175,7 +191,6 @@ if __name__ == '__main__':
                 attribution_preds_cpu = np.array(attribution_preds_cpu)
                 start_ids_list = np.array(start_ids_list)
             else:
-                # TODO: Implement loading from saved occlusions if needed
                 continue
             for i in range(attribution_preds_cpu.shape[0]):
                 start_id = start_ids_list[i]
@@ -186,23 +201,20 @@ if __name__ == '__main__':
                     save_recording_ids += [dataset.samples[patient_samples[i]]['recording_id']]
                     save_start_ids += [start_id]
                     save_occlusions += [attribution_preds_cpu[i]]
-                    save_dataset_ids_in_datasets += [0]  # Only one dataset per patient in this structure
+                    save_dataset_ids_in_datasets += [0]
     if not ckpt_exist:
         save_patient_ids = np.array(save_patient_ids)
         save_recording_ids = np.array(save_recording_ids)
         save_start_ids = np.array(save_start_ids)
         save_occlusions = np.array(save_occlusions)
         save_dataset_ids_in_datasets = np.array(save_dataset_ids_in_datasets)
-        np.savez_compressed(os.path.join(SAVE_PATH, "occlusion_contrast_data.npz"),
+        np.savez_compressed(os.path.join(args.save_path, "occlusion_contrast_data.npz"),
             patient_ids=save_patient_ids,
             recording_ids=save_recording_ids,
             start_ids=save_start_ids,
             occlusions=save_occlusions,
             dataset_ids_in_datasets=save_dataset_ids_in_datasets)
-    # TODO: Add group-wise mean/std, plotting, and further analysis as in the original script if needed.
-    print("Done.")
-
-    # After saving occlusion results, add group-wise mean/std plotting
+    # Group-wise mean/std plotting (already present)
     if not ckpt_exist:
         print("Generating group-wise mean/std occlusion plots...")
         for unique_recording_id in np.unique(save_recording_ids):
@@ -213,14 +225,12 @@ if __name__ == '__main__':
             patient_id = save_patient_ids[selected_ids][0]
             occlusion_preds = save_occlusions[selected_ids]
             start_ids = save_start_ids[selected_ids]
-            # Plot and save group-wise mean/std
-            groupwise_path = os.path.join(SAVE_PATH, f"{patient_id}/{patient_id}_{unique_recording_id}_groupwise.png")
+            groupwise_path = os.path.join(args.save_path, f"{patient_id}/{patient_id}_{unique_recording_id}_groupwise.png")
             mean, std = plot_occlusion_group_wise_mean_std(groupwise_path, occlusion_preds, channels)
-            # Optionally, plot histogram of max changes
             max_change = np.max(mean)
             plt.figure()
             plt.hist([max_change])
             plt.title(f"Max occlusion change for recording {unique_recording_id}")
-            plt.savefig(os.path.join(SAVE_PATH, f"{patient_id}/{unique_recording_id}_occlusion_max_changes.png"))
+            plt.savefig(os.path.join(args.save_path, f"{patient_id}/{unique_recording_id}_occlusion_max_changes.png"))
             plt.close()
     print("Done.") 
