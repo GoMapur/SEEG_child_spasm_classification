@@ -1,0 +1,18 @@
+{
+  "patients": [
+    {
+      "patient_id": "P001",
+      "recordings": [
+        {"recording_id": "R001", "label": 1, "split": "train"},
+        {"recording_id": "R002", "label": 0, "split": "val"}
+      ]
+    },
+    {
+      "patient_id": "P002",
+      "recordings": [
+        {"recording_id": "R003", "label": 1, "split": "test"},
+        {"recording_id": "R004", "label": 0, "split": "train"}
+      ]
+    }
+  ]
+} 
